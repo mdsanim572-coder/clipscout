@@ -1,0 +1,2 @@
+import {NextResponse} from "next/server";import {connectorStatuses} from "../../../lib/search";
+export async function GET(){return NextResponse.json({maxPlatformsPerSearch:8,sources:connectorStatuses(),liveCount:connectorStatuses().filter(s=>s.status==="live").length});}
