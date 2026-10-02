@@ -1,0 +1,21 @@
+import {youtubeConnector} from "./connectors/youtube";
+import {classify,keepClassification} from "./classifier";
+import {dedupe} from "./dedupe";
+import {cacheGet,cacheSet} from "./cache";
+import {cleanQuery,queryKey,tokenize} from "./query";
+import {DurationFilter,PlatformId,SortMode,VideoConnector,VideoResult} from "./types";
+const connectors:VideoConnector[]=[youtubeConnector];
+const allConnectorIds:PlatformId[]=["youtube","tiktok","reddit","instagram","x","facebook","twitch","dailymotion"];
+const platformNames:Record<PlatformId,VideoResult["platform"]>={youtube:"YouTube",tiktok:"TikTok",reddit:"Reddit",instagram:"Instagram",x:"X",facebook:"Facebook",twitch:"Twitch",dailymotion:"Dailymotion"};
+function demoResults(query:string,selected:PlatformId[]){return selected.map((id,i):VideoResult=>{const seconds=38+i*11,title=`${query} — individual clip ${i+1}`,classification=classify({title,description:`Demo standalone result for ${query}`,durationSeconds:seconds,tags:tokenize(query)});return{id:`demo-${id}-${i}-${encodeURIComponent(query)}`,platform:platformNames[id],platformId:id,sourceId:`demo-${id}-${i}`,creator:`${platformNames[id]} creator`,title,description:`Demo result. Connect the ${platformNames[id]} connector to replace this with live results.`,tags:tokenize(query),duration:`0:${String(seconds).padStart(2,"0")}`,durationSeconds:seconds,publishedAt:new Date(Date.now()-i*86400000).toISOString(),age:i?`${i} day${i>1?"s":""} ago`:"today",thumbnail:"https://images.unsplash.com/photo-1518791841217-8f162f1e1131?auto=format&fit=crop&w=900&q=80",url:`https://${id}.com`,classification,score:60-i};});}
+export function connectorStatuses(){return allConnectorIds.map(id=>({id,name:platformNames[id],status:connectors.some(c=>c.id===id)?"live":"planned"}));}
+function relevanceScore(v:VideoResult,q:string){const terms=tokenize(q);if(!terms.length)return v.score;const title=v.title.toLowerCase(),desc=v.description.toLowerCase();let weighted=0;for(const t of terms){if(title.includes(t))weighted+=3;else if(desc.includes(t))weighted+=1;if((v.tags||[]).some(tag=>tag.toLowerCase().includes(t)))weighted+=.5;}const relevance=Math.min(100,(weighted/(terms.length*3))*100);const clip=v.classification.type==="standalone"?10:0;const freshness=v.publishedAt?Math.max(0,6-Math.floor((Date.now()-Date.parse(v.publishedAt))/86400000/30)):0;return Math.round(Math.min(99,relevance*.62+v.score*.28+clip+freshness));}
+function durationOK(v:VideoResult,f:DurationFilter){const s=v.durationSeconds;if(f==="any"||!s)return true;if(f==="under60")return s<60;if(f==="under180")return s<180;if(f==="1to10")return s>=60&&s<=600;if(f==="over10")return s>600;return true;}
+export async function searchAll(input:string,limit=24,platform:"all"|PlatformId="all",sort:SortMode="relevance",duration:DurationFilter="any"){
+ const query=cleanQuery(input),selected=platform==="all"?connectors:connectors.filter(c=>c.id===platform),key=`v2:${platform}:${queryKey(query)}:${limit}:${sort}:${duration}`;const cached=cacheGet<any>(key);if(cached)return cached;
+ const settled=await Promise.allSettled(selected.map(c=>c.search({query,limit:Math.min(limit*2,50)})));const raw:VideoResult[]=[],errors:string[]=[];settled.forEach((r,i)=>r.status==="fulfilled"?raw.push(...r.value):errors.push(`${selected[i].name}: ${r.reason instanceof Error?r.reason.message:"connector error"}`));
+ const usedDemo=!raw.length; if(usedDemo)raw.push(...demoResults(query,platform==="all"?allConnectorIds:[platform]));
+ const unique=dedupe(raw);const classified=unique.map(v=>{const c=classify(v);return{...v,classification:c,score:relevanceScore({...v,classification:c},query)}});const durationFiltered=classified.filter(v=>durationOK(v,duration));const kept=durationFiltered.filter(v=>keepClassification(v.classification));
+ const sorted=[...kept].sort((a,b)=>sort==="recent"?Date.parse(b.publishedAt)-Date.parse(a.publishedAt):sort==="duration"?a.durationSeconds-b.durationSeconds:sort==="score"?b.score-a.score:b.score-a.score);
+ const result={results:sorted.slice(0,limit),filteredCount:classified.length-kept.length,duplicateCount:raw.length-unique.length,errors,live:!usedDemo&&raw.some(v=>!v.id.startsWith("demo-")),demo:usedDemo,sources:connectorStatuses(),searchedConnectors:selected.map(c=>c.name),query,limit,sort,duration};cacheSet(key,result,30000);return result;
+}
