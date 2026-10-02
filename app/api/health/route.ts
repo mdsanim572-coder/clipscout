@@ -1,0 +1,2 @@
+import {NextResponse} from "next/server";import {connectorStatuses} from "../../../lib/search";
+export async function GET(){const sources=connectorStatuses();return NextResponse.json({ok:true,app:"ClipScout",version:"0.2.0",time:new Date().toISOString(),sources,youtubeConfigured:Boolean(process.env.YOUTUBE_API_KEY),liveSources:sources.filter(s=>s.status==="live").length,maxPlatformsPerSearch:8});}
